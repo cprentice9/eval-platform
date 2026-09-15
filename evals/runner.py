@@ -116,6 +116,7 @@ def run_eval(model_id, benchmark="mt_bench", temperature=0.0, limit=None, log_di
                 output_tokens=output_tokens,
                 cost_usd=cost,
                 seconds=sample.total_time,
+                stop_reason=sample.output.choices[0].stop_reason if sample.output and sample.output.choices else "",
                 error=str(sample.error.message) if sample.error else "",
             )
         )

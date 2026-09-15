@@ -58,6 +58,7 @@ class SampleOutput(models.Model):
     output_tokens = models.IntegerField(default=0)
     cost_usd = models.DecimalField(max_digits=10, decimal_places=6, null=True)
     seconds = models.FloatField(null=True)
+    stop_reason = models.CharField(max_length=32, blank=True, help_text="Why generation ended, e.g. stop or max_tokens.")
     error = models.TextField(blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
