@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import os
 from datetime import datetime, timezone
 from decimal import Decimal
 from importlib.metadata import version
@@ -16,6 +17,16 @@ from .models import Item, Run, SampleOutput
 # The prompt sent to the model is the item's prompt with nothing added. Any
 # future system prompt or wrapper goes here, so the hash in Run captures it.
 PROMPT_TEMPLATE = "{prompt}"
+
+# Inspect model ids start with the provider; each provider reads its key from one env var.
+PROVIDER_KEYS = {"anthropic": "ANTHROPIC_API_KEY", "openrouter": "OPENROUTER_API_KEY"}
+
+
+def require_api_key(model_id):
+    provider = model_id.split("/", 1)[0]
+    key = PROVIDER_KEYS.get(provider)
+    if key and not os.environ.get(key):
+        raise ValueError(f"{key} is not set; add it to .env before running {model_id}")
 
 
 def sha256(text):
@@ -61,6 +72,7 @@ def run_eval(model_id, benchmark="mt_bench", temperature=0.0, limit=None, log_di
     if not items:
         raise ValueError(f"no items loaded for benchmark {benchmark!r}; run load_items first")
 
+    require_api_key(model_id)
     config = build_config(model_id, benchmark, temperature, items)
     dataset = MemoryDataset(
         [
@@ -75,6 +87,11 @@ def run_eval(model_id, benchmark="mt_bench", temperature=0.0, limit=None, log_di
     )
     task = Task(dataset=dataset, solver=generate(), config=GenerateConfig(temperature=temperature))
 
+    log = inspect_eval(task, model=model_id, log_dir=log_dir, display="plain")[0]
+    if log.status != "success":
+        raise RuntimeError(f"inspect run {log.status}: {log.error}")
+
+    # The Run row is written only after Inspect succeeds, so a failed run leaves nothing behind.
     run = Run.objects.create(
         model_id=model_id,
         benchmark=benchmark,
@@ -84,12 +101,8 @@ def run_eval(model_id, benchmark="mt_bench", temperature=0.0, limit=None, log_di
         inspect_version=config["inspect_version"],
         config=config,
         config_hash=config_hash(config),
-        started_at=datetime.now(timezone.utc),
+        started_at=_parse_time(log.stats.started_at) or datetime.now(timezone.utc),
     )
-    log = inspect_eval(task, model=model_id, log_dir=log_dir, display="plain")[0]
-    if log.status != "success":
-        raise RuntimeError(f"inspect run {log.status}: {log.error}")
-
     by_id = {item.item_id: item for item in items}
     outputs = []
     for sample in log.samples:

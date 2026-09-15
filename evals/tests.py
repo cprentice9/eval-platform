@@ -2,7 +2,7 @@ import pytest
 
 from evals.benchmarks import load_mt_bench
 from evals.models import Item, Run, SampleOutput
-from evals.runner import build_config, config_hash, diff_runs
+from evals.runner import build_config, config_hash, diff_runs, require_api_key
 
 pytestmark = pytest.mark.django_db
 
@@ -54,3 +54,10 @@ def test_diff_runs_reports_changed_and_missing_items():
     assert changed == ["mt_bench:82"]
     assert only_a == ["mt_bench:83"]
     assert only_b == []
+
+
+def test_missing_provider_key_is_a_plain_error(monkeypatch):
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    with pytest.raises(ValueError, match="ANTHROPIC_API_KEY"):
+        require_api_key("anthropic/claude-haiku-4-5-20251001")
+    require_api_key("mockllm/model")

@@ -1,4 +1,4 @@
-from django.core.management.base import BaseCommand
+from django.core.management.base import BaseCommand, CommandError
 
 from evals.runner import run_eval
 
@@ -13,7 +13,10 @@ class Command(BaseCommand):
         parser.add_argument("--limit", type=int, default=None, help="Only the first N items, for smoke tests.")
 
     def handle(self, model, benchmark, temperature, limit, **options):
-        run = run_eval(model, benchmark=benchmark, temperature=temperature, limit=limit)
+        try:
+            run = run_eval(model, benchmark=benchmark, temperature=temperature, limit=limit)
+        except ValueError as e:
+            raise CommandError(str(e))
         self.stdout.write(
             f"run {run.pk}: {run.samples.count()} samples, "
             f"{run.input_tokens} in / {run.output_tokens} out tokens, "
