@@ -1,0 +1,26 @@
+[project]
+name = "evalplatform"
+version = "0.1.0"
+description = "Runs models against a benchmark, grades with an LLM judge, and audits the judge against human labels."
+authors = [
+    { name = "Connor Prentice", email = "60930043+cprentice9@users.noreply.github.com" }
+]
+requires-python = ">=3.13"
+dependencies = [
+    "anthropic>=1.5.0",
+    "dj-database-url>=3.1.2",
+    "django>=6.1.1",
+    "inspect-ai>=0.3.263",
+    "openai>=3.14.0",
+    "psycopg[binary]>=3.3.5",
+    "python-dotenv>=1.2.3",
+]
+
+[tool.uv]
+package = false
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+    "pytest-django>=4.14.0",
+]
