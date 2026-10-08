@@ -90,19 +90,45 @@ def _parse_time(value):
 def _usage_totals(usage_by_model):
     """Inspect reports usage per model name; sum it because one run uses one model.
 
+    Input tokens include prompt-cache reads and writes, which Inspect reports separately.
     Cost is None when any entry has no price, so an unpriced run stores NULL rather than $0.
     It is rounded to the stored precision so the printed and stored values match.
     """
     input_tokens = output_tokens = 0
     cost = Decimal(0)
     for usage in (usage_by_model or {}).values():
-        input_tokens += usage.input_tokens
+        input_tokens += usage.input_tokens + (usage.input_tokens_cache_write or 0) + (usage.input_tokens_cache_read or 0)
         output_tokens += usage.output_tokens
         if usage.total_cost is None:
             cost = None
         elif cost is not None:
             cost += Decimal(str(usage.total_cost))
     return input_tokens, output_tokens, cost if cost is None else cost.quantize(COST_PLACES)
+
+
+def prepare_model(model_id, temperature):
+    """Check the key, register the price, and return the temperature the API will receive."""
+    require_api_key(model_id)
+    register_price(model_id)
+    if drops_temperature(model_id):
+        if temperature is not None:
+            logger.warning("%s does not accept a temperature; ignoring %s", model_id, temperature)
+        return None
+    return DEFAULT_TEMPERATURE if temperature is None else temperature
+
+
+def sample_fields(sample):
+    """The per-sample fields SampleOutput and JudgeVerdict both store."""
+    input_tokens, output_tokens, cost = _usage_totals(sample.model_usage)
+    return {
+        "output": sample.output.completion if sample.output else "",
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "cost_usd": cost,
+        "seconds": sample.total_time,
+        "stop_reason": sample.output.choices[0].stop_reason if sample.output and sample.output.choices else "",
+        "error": str(sample.error.message) if sample.error else "",
+    }
 
 
 def run_eval(model_id, benchmark="mt_bench", temperature=None, limit=None, log_dir="logs"):
@@ -116,14 +142,7 @@ def run_eval(model_id, benchmark="mt_bench", temperature=None, limit=None, log_d
     if not items:
         raise ValueError(f"no items loaded for benchmark {benchmark!r}; run load_items first")
 
-    require_api_key(model_id)
-    register_price(model_id)
-    if drops_temperature(model_id):
-        if temperature is not None:
-            logger.warning("%s does not accept a temperature; ignoring %s", model_id, temperature)
-        temperature = None
-    elif temperature is None:
-        temperature = DEFAULT_TEMPERATURE
+    temperature = prepare_model(model_id, temperature)
     config = build_config(model_id, benchmark, temperature, items)
     dataset = MemoryDataset(
         [
@@ -155,23 +174,9 @@ def run_eval(model_id, benchmark="mt_bench", temperature=None, limit=None, log_d
         started_at=_parse_time(log.stats.started_at) or datetime.now(timezone.utc),
     )
     by_id = {item.item_id: item for item in items}
-    outputs = []
-    for sample in log.samples:
-        input_tokens, output_tokens, cost = _usage_totals(sample.model_usage)
-        outputs.append(
-            SampleOutput(
-                run=run,
-                item=by_id[sample.id],
-                output=sample.output.completion if sample.output else "",
-                input_tokens=input_tokens,
-                output_tokens=output_tokens,
-                cost_usd=cost,
-                seconds=sample.total_time,
-                stop_reason=sample.output.choices[0].stop_reason if sample.output and sample.output.choices else "",
-                error=str(sample.error.message) if sample.error else "",
-            )
-        )
-    SampleOutput.objects.bulk_create(outputs)
+    SampleOutput.objects.bulk_create(
+        SampleOutput(run=run, item=by_id[sample.id], **sample_fields(sample)) for sample in log.samples
+    )
 
     run.input_tokens, run.output_tokens, run.cost_usd = _usage_totals(log.stats.model_usage)
     run.log_path = log.location or ""
