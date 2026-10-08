@@ -1,9 +1,10 @@
 from decimal import Decimal
 
 import pytest
+from django.db import models
 
-from evals.benchmarks import load_mt_bench
-from evals.models import Item, Run, SampleOutput
+from evals.benchmarks import load_mt_bench, load_mt_bench_human_judgments
+from evals.models import HumanJudgment, Item, JudgedAnswer, Run, SampleOutput
 from inspect_ai.model import ModelCost, ModelUsage, get_model_info
 from inspect_ai.model._model_info import clear_model_info_cache
 
@@ -102,3 +103,15 @@ def test_model_that_rejects_temperature_records_none(monkeypatch, tmp_path):
     assert run.temperature is None
     assert run.config["temperature"] is None
 
+
+def test_human_judgments_load_turn_one_votes_and_are_idempotent():
+    load_mt_bench()
+    assert load_mt_bench_human_judgments() == (480, 1689)
+    assert load_mt_bench_human_judgments() == (0, 0)
+    assert JudgedAnswer.objects.values("model_name").distinct().count() == 6
+    assert set(HumanJudgment.objects.values_list("winner", flat=True)) == {"model_a", "model_b", "tie"}
+    # Both answers in every vote are answers to the vote's own item.
+    assert not HumanJudgment.objects.exclude(answer_a__item=models.F("item")).exists()
+    assert not HumanJudgment.objects.exclude(answer_b__item=models.F("item")).exists()
+    vote = HumanJudgment.objects.get(item__item_id="mt_bench:81", judge="author_2", answer_a__model_name="alpaca-13b")
+    assert (vote.answer_b.model_name, vote.winner) == ("gpt-3.5-turbo", "model_b")
