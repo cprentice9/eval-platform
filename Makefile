@@ -1,4 +1,4 @@
-MODEL ?= anthropic/claude-haiku-4-5-20251001
+MODEL ?= anthropic/claude-haiku-5-5
 
 .PHONY: migrate load run test diff
 

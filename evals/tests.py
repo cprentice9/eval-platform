@@ -1,8 +1,13 @@
+from decimal import Decimal
+
 import pytest
 
 from evals.benchmarks import load_mt_bench
 from evals.models import Item, Run, SampleOutput
-from evals.runner import build_config, config_hash, diff_runs, require_api_key
+from inspect_ai.model import ModelCost, ModelUsage, get_model_info
+from inspect_ai.model._model_info import clear_model_info_cache
+
+from evals.runner import NO_TEMPERATURE, PRICES, _usage_totals, build_config, config_hash, diff_runs, register_price, require_api_key, run_eval
 
 pytestmark = pytest.mark.django_db
 
@@ -61,3 +66,39 @@ def test_missing_provider_key_is_a_plain_error(monkeypatch):
     with pytest.raises(ValueError, match="ANTHROPIC_API_KEY"):
         require_api_key("anthropic/claude-haiku-4-5-20251001")
     require_api_key("mockllm/model")
+
+
+def test_registered_price_reaches_inspect():
+    register_price("anthropic/claude-haiku-5-5")
+    try:
+        assert get_model_info("anthropic/claude-haiku-5-5").cost == PRICES["anthropic/claude-haiku-5-5"]
+    finally:
+        clear_model_info_cache()
+
+
+def test_usage_totals_sums_cost_and_reports_unpriced_as_none():
+    priced = ModelUsage(input_tokens=1000, output_tokens=2000, total_tokens=3000, total_cost=0.0011)
+    unpriced = ModelUsage(input_tokens=5, output_tokens=5, total_tokens=10)
+    assert _usage_totals({"a": priced, "b": priced}) == (2000, 4000, Decimal("0.0022"))
+    assert _usage_totals({"a": priced, "b": unpriced})[2] is None
+
+
+def test_priced_run_stores_cost_and_unpriced_run_stores_null(monkeypatch, tmp_path):
+    load_mt_bench()
+    assert run_eval("mockllm/model", limit=2, log_dir=str(tmp_path)).cost_usd is None
+    monkeypatch.setitem(PRICES, "mockllm/model", ModelCost(input=1.0, output=1.0, input_cache_write=1.0, input_cache_read=1.0))
+    try:
+        run = run_eval("mockllm/model", limit=2, log_dir=str(tmp_path))
+    finally:
+        clear_model_info_cache()
+    run.refresh_from_db()
+    assert run.cost_usd == Decimal(run.input_tokens + run.output_tokens) / 1_000_000
+
+
+def test_model_that_rejects_temperature_records_none(monkeypatch, tmp_path):
+    load_mt_bench()
+    monkeypatch.setattr("evals.runner.NO_TEMPERATURE", NO_TEMPERATURE | {"mockllm/model"})
+    run = run_eval("mockllm/model", limit=1, log_dir=str(tmp_path))
+    assert run.temperature is None
+    assert run.config["temperature"] is None
+

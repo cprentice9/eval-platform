@@ -9,7 +9,7 @@ from importlib.metadata import version
 
 from inspect_ai import Task, eval as inspect_eval
 from inspect_ai.dataset import MemoryDataset, Sample
-from inspect_ai.model import GenerateConfig
+from inspect_ai.model import GenerateConfig, ModelCost, ModelInfo, get_model_info, set_model_info
 from inspect_ai.solver import generate
 
 from .models import Item, Run, SampleOutput
@@ -20,6 +20,25 @@ PROMPT_TEMPLATE = "{prompt}"
 
 # Inspect model ids start with the provider; each provider reads its key from one env var.
 PROVIDER_KEYS = {"anthropic": "ANTHROPIC_API_KEY", "openrouter": "OPENROUTER_API_KEY"}
+
+# Anthropic list prices in USD per million tokens; cache writes are the 5-minute rate.
+# Inspect ships no prices for these, so without this table every run records no cost.
+# Haiku 5.5 bills 5x these rates for prompts over 100K tokens; no MT-Bench prompt comes close.
+PRICES = {
+    "anthropic/claude-haiku-4-5-20251001": ModelCost(input=1.00, output=5.00, input_cache_write=1.25, input_cache_read=0.10),
+    "anthropic/claude-haiku-5-5": ModelCost(input=0.10, output=0.50, input_cache_write=0.125, input_cache_read=0.01),
+}
+
+# Models that reject sampling parameters. Inspect drops temperature for them with only a
+# warning, so the Run records None instead of a temperature the API never received.
+NO_TEMPERATURE = {"anthropic/claude-haiku-5-5"}
+
+
+def register_price(model_id):
+    """Give Inspect the model's price so it fills in usage.total_cost. Unpriced models are left alone."""
+    if model_id in PRICES:
+        info = get_model_info(model_id) or ModelInfo()
+        set_model_info(model_id, info.model_copy(update={"cost": PRICES[model_id]}))
 
 
 def require_api_key(model_id):
@@ -53,13 +72,18 @@ def _parse_time(value):
 
 
 def _usage_totals(usage_by_model):
-    """Inspect reports usage per model name; sum it because one run uses one model."""
+    """Inspect reports usage per model name; sum it because one run uses one model.
+
+    Cost is None when any entry has no price, so an unpriced run stores NULL rather than $0.
+    """
     input_tokens = output_tokens = 0
     cost = Decimal(0)
     for usage in (usage_by_model or {}).values():
         input_tokens += usage.input_tokens
         output_tokens += usage.output_tokens
-        if usage.total_cost is not None:
+        if usage.total_cost is None:
+            cost = None
+        elif cost is not None:
             cost += Decimal(str(usage.total_cost))
     return input_tokens, output_tokens, cost
 
@@ -73,6 +97,9 @@ def run_eval(model_id, benchmark="mt_bench", temperature=0.0, limit=None, log_di
         raise ValueError(f"no items loaded for benchmark {benchmark!r}; run load_items first")
 
     require_api_key(model_id)
+    register_price(model_id)
+    if model_id in NO_TEMPERATURE:
+        temperature = None
     config = build_config(model_id, benchmark, temperature, items)
     dataset = MemoryDataset(
         [

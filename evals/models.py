@@ -28,7 +28,7 @@ class Run(models.Model):
 
     model_id = models.CharField(max_length=128)
     benchmark = models.CharField(max_length=64)
-    temperature = models.FloatField()
+    temperature = models.FloatField(null=True)
     prompt_template = models.TextField()
     prompt_template_hash = models.CharField(max_length=64)
     inspect_version = models.CharField(max_length=32)
@@ -69,3 +69,4 @@ class SampleOutput(models.Model):
 
     def __str__(self):
         return f"{self.run_id}:{self.item.item_id}"
+

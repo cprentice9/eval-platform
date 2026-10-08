@@ -20,13 +20,13 @@ make migrate load
 ## Running an eval
 
 ```bash
-make run                                              # Claude Haiku 4.5, all items, temperature 0
+make run                                              # Claude Haiku 5.5, all items
 make run MODEL=openrouter/some/model ARGS="--limit 5"  # any Inspect model id
 make diff A=1 B=2                                     # compare two run ids
 make test
 ```
 
-Every run stores its full config (model id, prompt template and its hash, temperature, Inspect version, item ids) plus a hash of that config. Two runs with the same hash are reproductions. `make diff` reports which item outputs changed between them, which for a deterministic setup should be only the nondeterministic ones.
+Every run stores its full config (model id, prompt template and its hash, temperature, Inspect version, item ids) plus a hash of that config. Haiku 5.5 rejects a temperature setting, so its runs record none. Two runs with the same hash are reproductions. `make diff` reports which item outputs changed between them, which for a deterministic setup should be only the nondeterministic ones.
 
 ## Benchmark
 
