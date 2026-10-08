@@ -1,0 +1,166 @@
+{% load static humanize %}<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>eval-platform</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Familjen+Grotesk:wght@400;500;700&family=Literata:opsz,wght@7..72,400;7..72,500&display=swap">
+  <link rel="stylesheet" href="{% static 'evals/site.css' %}">
+</head>
+<body>
+<header class="masthead">
+  <p class="wordmark">eval-platform</p>
+  <nav aria-label="Sections">
+    <a href="#how">How it works</a>
+    <a href="#votes">How people voted</a>
+    <a href="#runs">Runs</a>
+  </nav>
+</header>
+
+<main>
+  <section class="intro">
+    <h1>When does an LLM judge get it wrong?</h1>
+    <p class="lede">Teams grade chatbot answers with another model because people are slow and expensive. This project checks that shortcut. It gives an LLM judge the same answer pairs that {{ judge_count|default:"65" }} people already judged on the MT-Bench benchmark, then measures where the judge and the people disagree.</p>
+  </section>
+
+  {% if specimen %}
+  <section class="specimen" aria-labelledby="specimen-question">
+    <p class="specimen-meta">Question {{ specimen.item.source.question_id }}, {{ specimen.item.category }}. One of {{ vote_count|intcomma }} human votes.</p>
+    <h2 id="specimen-question" class="question">{{ specimen.item.prompt }}</h2>
+    <div class="pair">
+      <article class="answer{% if specimen.winner == 'model_a' %} chosen{% endif %}">
+        <header><span class="letter" aria-hidden="true">A</span><span>Answer A, from {{ specimen.name_a }}</span>{% if specimen.winner == 'model_a' %}<span class="picked">Picked by the person</span>{% endif %}</header>
+        <div class="answer-text" tabindex="0">{{ specimen.answer_a.answer|default:"(This model returned an empty answer.)" }}</div>
+      </article>
+      <article class="answer{% if specimen.winner == 'model_b' %} chosen{% endif %}">
+        <header><span class="letter" aria-hidden="true">B</span><span>Answer B, from {{ specimen.name_b }}</span>{% if specimen.winner == 'model_b' %}<span class="picked">Picked by the person</span>{% endif %}</header>
+        <div class="answer-text" tabindex="0">{{ specimen.answer_b.answer|default:"(This model returned an empty answer.)" }}</div>
+      </article>
+    </div>
+    <div class="verdicts">
+      <div class="verdict">
+        <p class="verdict-who">Person ({{ specimen.judge }})</p>
+        <p class="verdict-call">Answer {% if specimen.winner == 'model_a' %}A{% else %}B{% endif %} is better</p>
+      </div>
+      {% with call=specimen.judge_call %}
+      {% if call %}
+      <div class="verdict">
+        <p class="verdict-who">LLM judge ({{ call.model }})</p>
+        <p class="verdict-call">{% if call.winner == "tie" %}Tie{% elif call.winner %}Answer {{ call.winner }} is better{% else %}No verdict{% endif %}</p>
+        <p class="verdict-note">{% if call.flipped %}It changed its pick when the answers swapped places, which counts as a tie.{% elif call.winner == "tie" %}It called a tie.{% elif call.winner %}Same pick with the answers in either order.{% else %}Its reply had no verdict in one of the two orders.{% endif %}</p>
+      </div>
+      <p class="agreement {% if call.agrees %}agree{% else %}disagree{% endif %}">{% if call.agrees %}The judge agrees with the person.{% else %}The judge disagrees with the person.{% endif %}</p>
+      {% else %}
+      <div class="verdict pending">
+        <p class="verdict-who">LLM judge</p>
+        <p class="verdict-call">Not judged yet. Run <code>make judge</code>.</p>
+      </div>
+      {% endif %}
+      {% endwith %}
+      <a class="another" href="{% url 'index' %}">Show another pair</a>
+    </div>
+  </section>
+  {% else %}
+  <section class="specimen empty">
+    <p>No human votes are loaded yet. Run <code>make load</code> to load the 1,689 MT-Bench votes, then reload this page.</p>
+  </section>
+  {% endif %}
+
+  <section id="how" class="how">
+    <h2>How it works</h2>
+    <ol class="steps">
+      <li class="step done">
+        <h3>Run models on the 80 questions</h3>
+        <p>Each run saves every answer, what it cost, and a fingerprint of its settings so it can be repeated.</p>
+        <p class="status">Working now</p>
+      </li>
+      <li class="step{% if judged %} done{% endif %}">
+        <h3>Have an LLM judge pick the better answer</h3>
+        <p>The judge sees the same pairs the people saw, without their votes, once in each order to catch a bias toward the first answer.</p>
+        <p class="status">{% if judged %}Working now{% else %}Next{% endif %}</p>
+      </li>
+      <li class="step">
+        <h3>Measure where they disagree</h3>
+        <p>Agreement rate and Cohen's kappa, broken down by model and by question category.</p>
+        <p class="status">{% if judged %}Next{% else %}Planned{% endif %}</p>
+      </li>
+    </ol>
+  </section>
+
+  <section id="votes" class="votes">
+    <h2>How people voted</h2>
+    {% if standings %}
+    {% with top=standings.0 %}
+    <p class="section-lede">Each bar splits one model's matchups into the ones people called a win, a tie, or a loss. {{ top.name }} won {{ top.win_pct|floatformat:0 }}% of its {{ top.votes }} matchups. These answers are from 2023 models, the ones the human votes cover.</p>
+    {% endwith %}
+    <ul class="legend" aria-label="Legend">
+      <li><span class="swatch win"></span>Win</li>
+      <li><span class="swatch tie"></span>Tie</li>
+      <li><span class="swatch loss"></span>Loss</li>
+    </ul>
+    <ul class="bars">
+      {% for row in standings %}
+      <li class="bar-row">
+        <span class="bar-name">{{ row.name }}</span>
+        <span class="bar" role="img" aria-label="{{ row.name }}: {{ row.win }} wins, {{ row.tie }} ties, {{ row.loss }} losses out of {{ row.votes }} votes">
+          <span class="seg win{% if row.win_pct < 14 %} small{% endif %}" style="width: {{ row.win_pct|floatformat:2 }}%" title="{{ row.win }} wins of {{ row.votes }}">{% if row.win_pct >= 9 %}{{ row.win_pct|floatformat:0 }}%{% endif %}</span>
+          <span class="seg tie{% if row.tie_pct < 14 %} small{% endif %}" style="width: {{ row.tie_pct|floatformat:2 }}%" title="{{ row.tie }} ties of {{ row.votes }}">{% if row.tie_pct >= 9 %}{{ row.tie_pct|floatformat:0 }}%{% endif %}</span>
+          <span class="seg loss{% if row.loss_pct < 14 %} small{% endif %}" style="width: {{ row.loss_pct|floatformat:2 }}%" title="{{ row.loss }} losses of {{ row.votes }}">{% if row.loss_pct >= 9 %}{{ row.loss_pct|floatformat:0 }}%{% endif %}</span>
+        </span>
+        <span class="bar-total">{{ row.votes }} votes</span>
+      </li>
+      {% endfor %}
+    </ul>
+    <details class="table-view">
+      <summary>Show as a table</summary>
+      <table>
+        <thead><tr><th scope="col">Model</th><th scope="col">Wins</th><th scope="col">Ties</th><th scope="col">Losses</th><th scope="col">Votes</th></tr></thead>
+        <tbody>
+          {% for row in standings %}
+          <tr><th scope="row">{{ row.name }}</th><td>{{ row.win }}</td><td>{{ row.tie }}</td><td>{{ row.loss }}</td><td>{{ row.votes }}</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </details>
+    {% else %}
+    <p class="section-lede">No votes loaded yet. Run <code>make load</code>.</p>
+    {% endif %}
+  </section>
+
+  <section id="runs" class="runs">
+    <h2>Runs</h2>
+    <p class="section-lede">Every model run so far, newest first. To read each answer, open the Inspect viewer with <code>uv run inspect view --log-dir logs</code>.</p>
+    {% if runs %}
+    <div class="table-scroll">
+      <table>
+        <thead>
+          <tr><th scope="col">Run</th><th scope="col">Model</th><th scope="col">Finished (UTC)</th><th scope="col" class="num">Questions</th><th scope="col" class="num">Tokens in / out</th><th scope="col" class="num">Cost</th><th scope="col">Temperature</th></tr>
+        </thead>
+        <tbody>
+          {% for run in runs %}
+          <tr>
+            <td>{{ run.pk }}</td>
+            <td class="model">{{ run.model_id }}</td>
+            <td>{{ run.completed_at|date:"M j, g:i a"|default:"Not finished" }}</td>
+            <td class="num">{{ run.questions }}</td>
+            <td class="num">{{ run.input_tokens|intcomma }} / {{ run.output_tokens|intcomma }}</td>
+            <td class="num">{% if run.cost_usd is None %}<span class="muted">Unknown</span>{% else %}${{ run.cost_usd|floatformat:5 }}{% endif %}</td>
+            <td>{% if run.temperature is None %}<span class="muted">API default</span>{% else %}{{ run.temperature }}{% endif %}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+    <p class="empty-runs">No runs yet. Start one with <code>make run ARGS="--limit 5"</code>.</p>
+    {% endif %}
+  </section>
+</main>
+
+<footer class="colophon">
+  <p>Human votes from the <a href="https://huggingface.co/datasets/lmsys/mt_bench_human_judgments">MT-Bench human judgments</a> (Zheng et al., 2023), licensed CC-BY-4.0.</p>
+</footer>
+</body>
+</html>

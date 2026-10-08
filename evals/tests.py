@@ -5,9 +5,11 @@ import logging
 
 import pytest
 from django.db import models
+from django.utils.html import escape
 
+from evals.judge import _messages, human_judged_pairs, pair_winner, parse_verdict, run_judge
 from evals.benchmarks import load_mt_bench, load_mt_bench_human_judgments
-from evals.models import HumanJudgment, Item, JudgedAnswer, Run, SampleOutput
+from evals.models import HumanJudgment, Item, JudgedAnswer, JudgeRun, JudgeVerdict, Run, SampleOutput
 from inspect_ai.model import ModelCost, ModelUsage, get_model_info
 from inspect_ai.model._model_info import clear_model_info_cache
 
@@ -85,6 +87,8 @@ def test_usage_totals_sums_cost_and_reports_unpriced_as_none():
     unpriced = ModelUsage(input_tokens=5, output_tokens=5, total_tokens=10)
     assert _usage_totals({"a": priced, "b": priced}) == (2000, 4000, Decimal("0.0022"))
     assert _usage_totals({"a": priced, "b": unpriced})[2] is None
+    cached = ModelUsage(input_tokens=80, output_tokens=10, total_tokens=1090, input_tokens_cache_write=900, input_tokens_cache_read=100)
+    assert _usage_totals({"a": cached})[0] == 1080
 
 
 def test_priced_run_stores_cost_and_unpriced_run_stores_null(monkeypatch, tmp_path):
@@ -159,3 +163,95 @@ def test_human_judgments_need_items_and_leave_nothing_on_failure():
     with pytest.raises(ValueError, match="run load_mt_bench first"):
         load_mt_bench_human_judgments()
     assert not JudgedAnswer.objects.exists()
+
+
+def test_results_page_explains_empty_state(client):
+    page = client.get("/").content.decode()
+    assert "When does an LLM judge get it wrong?" in page
+    assert "No human votes are loaded yet" in page
+    assert "No runs yet" in page
+
+
+def test_results_page_shows_a_vote_standings_and_runs(client, tmp_path):
+    load_mt_bench()
+    load_mt_bench_human_judgments()
+    run = run_eval("mockllm/model", limit=2, log_dir=str(tmp_path))
+    response = client.get("/")
+    page = response.content.decode()
+    specimen = response.context["specimen"]
+    assert specimen.winner != "tie"
+    assert escape(specimen.item.prompt) in page
+    standings = response.context["standings"]
+    assert [row["name"] for row in standings][0] == "GPT-4"
+    assert sum(row["votes"] for row in standings) == 2 * 1689
+    assert all(round(row["win_pct"] + row["tie_pct"] + row["loss_pct"]) == 100 for row in standings)
+    assert "One of 1,689 human votes." in page
+    assert f"<td>{run.pk}</td>" in page and "Unknown" in page
+
+
+@pytest.mark.parametrize("text, verdict", [
+    ("A is clearer. [[A]]", "A"),
+    ("Final verdict: [[B]]", "B"),
+    ("Both are equally good. [[C]]", "tie"),
+    ('I will answer "[[A]]" if A is better. B is more accurate, so [[B]]', "B"),
+    ("B is better.", ""),
+    ("[[D]]", ""),
+    ("", ""),
+    (None, ""),
+])
+def test_parse_verdict(text, verdict):
+    assert parse_verdict(text) == verdict
+
+
+@pytest.mark.parametrize("first, second, winner", [
+    ("A", "B", "x"),
+    ("B", "A", "y"),
+    ("A", "A", "tie"),
+    ("B", "B", "tie"),
+    ("tie", "A", "tie"),
+    ("tie", "tie", "tie"),
+    ("", "B", None),
+    ("A", "", None),
+])
+def test_pair_winner_needs_the_same_pick_in_both_orders(first, second, winner):
+    assert pair_winner(first, second) == winner
+
+
+def test_judge_prompt_uses_reference_only_for_math_reasoning_and_coding():
+    load_mt_bench()
+    load_mt_bench_human_judgments()
+    math = JudgedAnswer.objects.filter(item__category="math").first()
+    writing = JudgedAnswer.objects.filter(item__category="writing").first()
+    assert "[The Start of Reference Answer]" in _messages(math.item, math, math)[1].content
+    assert "[The Start of Reference Answer]" not in _messages(writing.item, writing, writing)[1].content
+
+
+def test_judge_run_judges_each_pair_in_both_orders(tmp_path):
+    load_mt_bench()
+    load_mt_bench_human_judgments()
+    assert len(human_judged_pairs()) == 910
+    run = run_judge("mockllm/model", limit=3, log_dir=str(tmp_path))
+    orders = set(run.verdicts.values_list("shown_as_a", "shown_as_b"))
+    assert len(orders) == 6
+    assert all((b, a) in orders for a, b in orders)
+    assert run.temperature == 0.0 and len(run.config["pairs"]) == 3
+    # mockllm replies with fixed text that has no verdict mark.
+    assert set(run.verdicts.values_list("verdict", flat=True)) == {""}
+
+
+def test_results_page_shows_the_judge_pick_for_the_specimen(client):
+    from django.utils import timezone
+
+    load_mt_bench()
+    load_mt_bench_human_judgments()
+    vote = HumanJudgment.objects.exclude(winner="tie").first()
+    HumanJudgment.objects.exclude(pk=vote.pk).delete()  # leaves one pair for the page to show
+    run = JudgeRun.objects.create(model_id="anthropic/claude-haiku-5-5", inspect_version="", config={}, config_hash="", started_at=timezone.now())
+    a, b = vote.answer_a, vote.answer_b
+    # The judge picks the first-shown answer both times: position bias, so a tie.
+    for first, second in ((a, b), (b, a)):
+        JudgeVerdict.objects.create(judge_run=run, item=vote.item, shown_as_a=first, shown_as_b=second, verdict="A", output="[[A]]")
+    page = client.get("/").content.decode()
+    assert "LLM judge (Claude Haiku 5.5)" in page
+    assert "changed its pick when the answers swapped places" in page
+    assert "The judge disagrees with the person." in page

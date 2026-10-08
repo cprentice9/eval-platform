@@ -108,3 +108,55 @@ class HumanJudgment(models.Model):
 
     def __str__(self):
         return f"{self.judge}:{self.answer_a} vs {self.answer_b}"
+
+
+class JudgeRun(models.Model):
+    """One LLM judge pass over the human-judged answer pairs, each pair shown in both orders.
+
+    config holds everything that determines the verdicts; config_hash works as on Run.
+    """
+
+    model_id = models.CharField(max_length=128)
+    temperature = models.FloatField(null=True)
+    inspect_version = models.CharField(max_length=32)
+    config = models.JSONField()
+    config_hash = models.CharField(max_length=64, db_index=True)
+    log_path = models.CharField(max_length=512, blank=True)
+    started_at = models.DateTimeField()
+    completed_at = models.DateTimeField(null=True)
+    cost_usd = models.DecimalField(max_digits=14, decimal_places=9, null=True)
+    input_tokens = models.IntegerField(default=0)
+    output_tokens = models.IntegerField(default=0)
+
+    class Meta:
+        ordering = ["-started_at"]
+
+    def __str__(self):
+        return f"judge run {self.pk} {self.model_id} {self.config_hash[:8]}"
+
+
+class JudgeVerdict(models.Model):
+    """The judge's call on one pair in one order: which answer it saw as A and which as B."""
+
+    VERDICTS = [("A", "answer A"), ("B", "answer B"), ("tie", "tie"), ("", "no verdict found")]
+
+    judge_run = models.ForeignKey(JudgeRun, on_delete=models.CASCADE, related_name="verdicts")
+    item = models.ForeignKey(Item, on_delete=models.PROTECT, related_name="judge_verdicts")
+    shown_as_a = models.ForeignKey(JudgedAnswer, on_delete=models.PROTECT, related_name="+")
+    shown_as_b = models.ForeignKey(JudgedAnswer, on_delete=models.PROTECT, related_name="+")
+    verdict = models.CharField(max_length=3, choices=VERDICTS, blank=True)
+    output = models.TextField()
+    input_tokens = models.IntegerField(default=0)
+    output_tokens = models.IntegerField(default=0)
+    cost_usd = models.DecimalField(max_digits=14, decimal_places=9, null=True)
+    seconds = models.FloatField(null=True)
+    stop_reason = models.CharField(max_length=32, blank=True)
+    error = models.TextField(blank=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=["judge_run", "shown_as_a", "shown_as_b"], name="one_verdict_per_run_order"),
+        ]
+
+    def __str__(self):
+        return f"{self.judge_run_id}:{self.shown_as_a} vs {self.shown_as_b}:{self.verdict or '?'}"
