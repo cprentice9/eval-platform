@@ -28,7 +28,7 @@ class Run(models.Model):
 
     model_id = models.CharField(max_length=128)
     benchmark = models.CharField(max_length=64)
-    temperature = models.FloatField()
+    temperature = models.FloatField(null=True)
     prompt_template = models.TextField()
     prompt_template_hash = models.CharField(max_length=64)
     inspect_version = models.CharField(max_length=32)
@@ -37,7 +37,7 @@ class Run(models.Model):
     log_path = models.CharField(max_length=512, blank=True)
     started_at = models.DateTimeField()
     completed_at = models.DateTimeField(null=True)
-    cost_usd = models.DecimalField(max_digits=10, decimal_places=6, null=True)
+    cost_usd = models.DecimalField(max_digits=14, decimal_places=9, null=True)
     input_tokens = models.IntegerField(default=0)
     output_tokens = models.IntegerField(default=0)
 
@@ -56,7 +56,7 @@ class SampleOutput(models.Model):
     output = models.TextField()
     input_tokens = models.IntegerField(default=0)
     output_tokens = models.IntegerField(default=0)
-    cost_usd = models.DecimalField(max_digits=10, decimal_places=6, null=True)
+    cost_usd = models.DecimalField(max_digits=14, decimal_places=9, null=True)
     seconds = models.FloatField(null=True)
     stop_reason = models.CharField(max_length=32, blank=True, help_text="Why generation ended, e.g. stop or max_tokens.")
     error = models.TextField(blank=True)
@@ -69,3 +69,42 @@ class SampleOutput(models.Model):
 
     def __str__(self):
         return f"{self.run_id}:{self.item.item_id}"
+
+
+class JudgedAnswer(models.Model):
+    """One 2023 model's answer to an item, from the MT-Bench human-judgment release.
+
+    These are the answers the human votes are about; they are not produced by our runs.
+    """
+
+    item = models.ForeignKey(Item, on_delete=models.PROTECT, related_name="judged_answers")
+    model_name = models.CharField(max_length=64)
+    answer = models.TextField()
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=["item", "model_name"], name="one_judged_answer_per_item_model"),
+        ]
+
+    def __str__(self):
+        return f"{self.item.item_id}:{self.model_name}"
+
+
+class HumanJudgment(models.Model):
+    """One human vote on which of two judged answers to an item is better, or a tie."""
+
+    WINNERS = [("model_a", "answer A"), ("model_b", "answer B"), ("tie", "tie")]
+
+    item = models.ForeignKey(Item, on_delete=models.PROTECT, related_name="human_judgments")
+    judge = models.CharField(max_length=32, help_text="Annotator id from the release, e.g. expert_17.")
+    answer_a = models.ForeignKey(JudgedAnswer, on_delete=models.PROTECT, related_name="+")
+    answer_b = models.ForeignKey(JudgedAnswer, on_delete=models.PROTECT, related_name="+")
+    winner = models.CharField(max_length=8, choices=WINNERS)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=["judge", "answer_a", "answer_b"], name="one_vote_per_judge_pair"),
+        ]
+
+    def __str__(self):
+        return f"{self.judge}:{self.answer_a} vs {self.answer_b}"

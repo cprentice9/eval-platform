@@ -1,7 +1,7 @@
 from django.core.management.base import BaseCommand, CommandError
 
-from evals.benchmarks import LOADERS
-from evals.models import Item
+from evals.benchmarks import LOADERS, load_mt_bench_human_judgments
+from evals.models import HumanJudgment, Item
 
 
 class Command(BaseCommand):
@@ -14,3 +14,7 @@ class Command(BaseCommand):
         created = LOADERS[benchmark]()
         total = Item.objects.filter(benchmark=benchmark).count()
         self.stdout.write(f"{benchmark}: {created} created, {total} total")
+        if benchmark == "mt_bench":
+            answers, votes = load_mt_bench_human_judgments()
+            total = HumanJudgment.objects.count()
+            self.stdout.write(f"human judgments: {votes} created, {total} total ({answers} answers created)")
