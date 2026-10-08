@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import logging
 import os
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -9,10 +10,12 @@ from importlib.metadata import version
 
 from inspect_ai import Task, eval as inspect_eval
 from inspect_ai.dataset import MemoryDataset, Sample
-from inspect_ai.model import GenerateConfig, ModelCost, ModelInfo, get_model_info, set_model_info
+from inspect_ai.model import GenerateConfig, ModelCost, ModelInfo, get_model, get_model_info, set_model_info
 from inspect_ai.solver import generate
 
 from .models import Item, Run, SampleOutput
+
+logger = logging.getLogger(__name__)
 
 # The prompt sent to the model is the item's prompt with nothing added. Any
 # future system prompt or wrapper goes here, so the hash in Run captures it.
@@ -22,6 +25,7 @@ PROMPT_TEMPLATE = "{prompt}"
 PROVIDER_KEYS = {"anthropic": "ANTHROPIC_API_KEY", "openrouter": "OPENROUTER_API_KEY"}
 
 # Anthropic list prices in USD per million tokens; cache writes are the 5-minute rate.
+# Source: https://platform.claude.com/docs/en/about-claude/pricing (checked 2026-10-07).
 # Inspect ships no prices for these, so without this table every run records no cost.
 # Haiku 5.5 bills 5x these rates for prompts over 100K tokens; no MT-Bench prompt comes close.
 PRICES = {
@@ -29,9 +33,21 @@ PRICES = {
     "anthropic/claude-haiku-5-5": ModelCost(input=0.10, output=0.50, input_cache_write=0.125, input_cache_read=0.01),
 }
 
-# Models that reject sampling parameters. Inspect drops temperature for them with only a
-# warning, so the Run records None instead of a temperature the API never received.
-NO_TEMPERATURE = {"anthropic/claude-haiku-5-5"}
+# Used when the caller gives no temperature and the model accepts one.
+DEFAULT_TEMPERATURE = 0.0
+
+# Costs are stored to 9 decimal places; Haiku 5.5 input is $1e-7 per token.
+COST_PLACES = Decimal("0.000000001")
+
+
+def drops_temperature(model_id):
+    """True when Inspect will not send a temperature to this model.
+
+    Inspect's Anthropic provider leaves sampling parameters out for Claude 4.7
+    and later, which reject them. Other providers send them.
+    """
+    api = get_model(model_id).api
+    return getattr(api, "is_claude_4_7_or_later", lambda: False)()
 
 
 def register_price(model_id):
@@ -75,6 +91,7 @@ def _usage_totals(usage_by_model):
     """Inspect reports usage per model name; sum it because one run uses one model.
 
     Cost is None when any entry has no price, so an unpriced run stores NULL rather than $0.
+    It is rounded to the stored precision so the printed and stored values match.
     """
     input_tokens = output_tokens = 0
     cost = Decimal(0)
@@ -85,11 +102,14 @@ def _usage_totals(usage_by_model):
             cost = None
         elif cost is not None:
             cost += Decimal(str(usage.total_cost))
-    return input_tokens, output_tokens, cost
+    return input_tokens, output_tokens, cost if cost is None else cost.quantize(COST_PLACES)
 
 
-def run_eval(model_id, benchmark="mt_bench", temperature=0.0, limit=None, log_dir="logs"):
-    """Run the model, store one Run and one SampleOutput per item, return the Run."""
+def run_eval(model_id, benchmark="mt_bench", temperature=None, limit=None, log_dir="logs"):
+    """Run the model, store one Run and one SampleOutput per item, return the Run.
+
+    The Run records the temperature the API received: None for models that reject one.
+    """
     items = list(Item.objects.filter(benchmark=benchmark))
     if limit:
         items = items[:limit]
@@ -98,8 +118,12 @@ def run_eval(model_id, benchmark="mt_bench", temperature=0.0, limit=None, log_di
 
     require_api_key(model_id)
     register_price(model_id)
-    if model_id in NO_TEMPERATURE:
+    if drops_temperature(model_id):
+        if temperature is not None:
+            logger.warning("%s does not accept a temperature; ignoring %s", model_id, temperature)
         temperature = None
+    elif temperature is None:
+        temperature = DEFAULT_TEMPERATURE
     config = build_config(model_id, benchmark, temperature, items)
     dataset = MemoryDataset(
         [

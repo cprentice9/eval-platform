@@ -37,7 +37,7 @@ class Run(models.Model):
     log_path = models.CharField(max_length=512, blank=True)
     started_at = models.DateTimeField()
     completed_at = models.DateTimeField(null=True)
-    cost_usd = models.DecimalField(max_digits=10, decimal_places=6, null=True)
+    cost_usd = models.DecimalField(max_digits=14, decimal_places=9, null=True)
     input_tokens = models.IntegerField(default=0)
     output_tokens = models.IntegerField(default=0)
 
@@ -56,7 +56,7 @@ class SampleOutput(models.Model):
     output = models.TextField()
     input_tokens = models.IntegerField(default=0)
     output_tokens = models.IntegerField(default=0)
-    cost_usd = models.DecimalField(max_digits=10, decimal_places=6, null=True)
+    cost_usd = models.DecimalField(max_digits=14, decimal_places=9, null=True)
     seconds = models.FloatField(null=True)
     stop_reason = models.CharField(max_length=32, blank=True, help_text="Why generation ended, e.g. stop or max_tokens.")
     error = models.TextField(blank=True)

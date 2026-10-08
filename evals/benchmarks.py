@@ -3,6 +3,8 @@
 import json
 from pathlib import Path
 
+from django.db import transaction
+
 from .models import HumanJudgment, Item, JudgedAnswer
 
 DATA_DIR = Path(__file__).resolve().parent.parent / "data"
@@ -41,15 +43,19 @@ def load_mt_bench():
     return created
 
 
+@transaction.atomic
 def load_mt_bench_human_judgments():
     """Load the turn-1 votes from the MT-Bench human-judgment release.
 
     The release has 1,689 turn-1 votes by 65 judges on answers from six 2023
     models. data/mt_bench/human_judgment_answers.jsonl holds each model's
     answer once; human_judgments.jsonl holds the votes. Needs the items loaded.
+    Runs in one transaction, so a failure leaves nothing half loaded.
     Returns (answers created, votes created).
     """
     items = {item.source["question_id"]: item for item in Item.objects.filter(benchmark="mt_bench")}
+    if len(items) != 80:
+        raise ValueError(f"expected the 80 MT-Bench items, found {len(items)}; run load_mt_bench first")
     answers = {}
     answers_created = 0
     for r in _read_jsonl(DATA_DIR / "mt_bench" / "human_judgment_answers.jsonl"):

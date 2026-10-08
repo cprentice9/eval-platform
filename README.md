@@ -26,7 +26,7 @@ make diff A=1 B=2                                     # compare two run ids
 make test
 ```
 
-Every run stores its full config (model id, prompt template and its hash, temperature, Inspect version, item ids) plus a hash of that config. Haiku 5.5 rejects a temperature setting, so its runs record none. Two runs with the same hash are reproductions. `make diff` reports which item outputs changed between them, which for a deterministic setup should be only the nondeterministic ones.
+Every run stores its full config (model id, prompt template and its hash, temperature, Inspect version, item ids) plus a hash of that config. Claude models from 4.7 on, Haiku 5.5 included, reject a temperature setting, so their runs record none and sample at the API's default. Their outputs vary between runs even when the hashes match. Two runs with the same hash are reproductions. `make diff` reports which item outputs changed between them, which for a deterministic setup should be only the nondeterministic ones.
 
 ## Benchmark
 
@@ -34,7 +34,7 @@ The first turn of each of the 80 [MT-Bench](https://github.com/lm-sys/FastChat/t
 
 ## Human labels
 
-The human labels are the turn-1 votes from the [MT-Bench human judgments](https://huggingface.co/datasets/lmsys/mt_bench_human_judgments) (Zheng et al., 2023, "Judging LLM-as-a-Judge with MT-Bench and Chatbot Arena"), licensed CC-BY-4.0. There are 1,689 votes by 65 judges. Each one says which of two answers to a question is better, or calls a tie. The answers come from six 2023 models: GPT-4, GPT-3.5, Claude-v1, Vicuna-13B, Alpaca-13B, and LLaMA-13B. Our own runs have no human labels. `make load` loads the votes from `data/mt_bench/human_judgments.jsonl` and the answers from `data/mt_bench/human_judgment_answers.jsonl`. Both files were converted from the release's `human` parquet split, keeping turn 1 only.
+The human labels are the turn-1 votes from the [MT-Bench human judgments](https://huggingface.co/datasets/lmsys/mt_bench_human_judgments) (Zheng et al., 2023, "Judging LLM-as-a-Judge with MT-Bench and Chatbot Arena"), licensed CC-BY-4.0. There are 1,689 votes by 65 judges. Each one says which of two answers to a question is better, or calls a tie. The answers come from six 2023 models: GPT-4, GPT-3.5, Claude-v1, Vicuna-13B, Alpaca-13B, and LLaMA-13B. Our own runs have no human labels. `make load` loads the votes from `data/mt_bench/human_judgments.jsonl` and the answers from `data/mt_bench/human_judgment_answers.jsonl`. Both files were converted from the release's `human` split (`data/human-00000-of-00001-25f4910818759289.parquet`, sha256 `4877bc46a40929f4082c3c79593700fb897b1d6c7f4c473032694a01322f5769`), keeping turn-1 rows only. Winner values are copied as is; the source uses only `model_a`, `model_b`, and `tie`. Each model's answer text is stored once, since every vote on the same question and model carries identical text. One answer is empty in the source: LLaMA-13B on question 127. One judge, `author_0`, voted on the same pair for question 128 twice with the models in opposite order, and both votes are kept.
 
 ## Milestones
 

@@ -9,7 +9,7 @@ class Command(BaseCommand):
     def add_arguments(self, parser):
         parser.add_argument("--model", required=True, help="Inspect model id, e.g. anthropic/claude-haiku-5-5")
         parser.add_argument("--benchmark", default="mt_bench")
-        parser.add_argument("--temperature", type=float, default=0.0)
+        parser.add_argument("--temperature", type=float, default=None, help="Defaults to 0.0; ignored for models that reject it.")
         parser.add_argument("--limit", type=int, default=None, help="Only the first N items, for smoke tests.")
 
     def handle(self, model, benchmark, temperature, limit, **options):

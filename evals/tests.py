@@ -1,5 +1,8 @@
 from decimal import Decimal
 
+import importlib
+import logging
+
 import pytest
 from django.db import models
 
@@ -8,7 +11,7 @@ from evals.models import HumanJudgment, Item, JudgedAnswer, Run, SampleOutput
 from inspect_ai.model import ModelCost, ModelUsage, get_model_info
 from inspect_ai.model._model_info import clear_model_info_cache
 
-from evals.runner import NO_TEMPERATURE, PRICES, _usage_totals, build_config, config_hash, diff_runs, register_price, require_api_key, run_eval
+from evals.runner import PRICES, _usage_totals, build_config, config_hash, diff_runs, drops_temperature, register_price, require_api_key, run_eval
 
 pytestmark = pytest.mark.django_db
 
@@ -96,12 +99,47 @@ def test_priced_run_stores_cost_and_unpriced_run_stores_null(monkeypatch, tmp_pa
     assert run.cost_usd == Decimal(run.input_tokens + run.output_tokens) / 1_000_000
 
 
-def test_model_that_rejects_temperature_records_none(monkeypatch, tmp_path):
+def test_model_that_rejects_temperature_records_none_and_warns(monkeypatch, tmp_path, caplog):
     load_mt_bench()
-    monkeypatch.setattr("evals.runner.NO_TEMPERATURE", NO_TEMPERATURE | {"mockllm/model"})
-    run = run_eval("mockllm/model", limit=1, log_dir=str(tmp_path))
+    monkeypatch.setattr("evals.runner.drops_temperature", lambda model_id: True)
+    with caplog.at_level(logging.WARNING, logger="evals.runner"):
+        run = run_eval("mockllm/model", temperature=0.7, limit=1, log_dir=str(tmp_path))
     assert run.temperature is None
     assert run.config["temperature"] is None
+    assert "ignoring 0.7" in caplog.text
+
+
+def test_model_that_accepts_temperature_defaults_to_zero(tmp_path):
+    load_mt_bench()
+    assert run_eval("mockllm/model", limit=1, log_dir=str(tmp_path)).temperature == 0.0
+
+
+def test_drops_temperature_follows_inspect_for_claude_4_7_and_later(monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    assert drops_temperature("anthropic/claude-haiku-5-5")
+    assert drops_temperature("anthropic/claude-sonnet-5-5")
+    assert not drops_temperature("anthropic/claude-haiku-4-5-20251001")
+    assert not drops_temperature("mockllm/model")
+
+
+def test_usage_totals_rounds_cost_to_stored_precision():
+    noisy = ModelUsage(input_tokens=1, output_tokens=1, total_tokens=2, total_cost=0.1 + 0.2)
+    assert _usage_totals({"a": noisy})[2] == Decimal("0.300000000")
+
+
+def test_migration_nulls_zero_costs_only_where_tokens_were_used():
+    from django.apps import apps
+    from django.utils import timezone
+
+    migration = importlib.import_module("evals.migrations.0005_cost_nine_places")
+    common = dict(benchmark="mt_bench", prompt_template="", prompt_template_hash="", inspect_version="", config={}, config_hash="", started_at=timezone.now())
+    used = Run.objects.create(model_id="old", cost_usd=0, input_tokens=10, **common)
+    unused = Run.objects.create(model_id="empty", cost_usd=0, **common)
+    priced = Run.objects.create(model_id="priced", cost_usd=Decimal("0.001"), input_tokens=10, **common)
+    migration.null_unpriced_zero_costs(apps, None)
+    for run in (used, unused, priced):
+        run.refresh_from_db()
+    assert (used.cost_usd, unused.cost_usd, priced.cost_usd) == (None, 0, Decimal("0.001"))
 
 
 def test_human_judgments_load_turn_one_votes_and_are_idempotent():
@@ -115,3 +153,9 @@ def test_human_judgments_load_turn_one_votes_and_are_idempotent():
     assert not HumanJudgment.objects.exclude(answer_b__item=models.F("item")).exists()
     vote = HumanJudgment.objects.get(item__item_id="mt_bench:81", judge="author_2", answer_a__model_name="alpaca-13b")
     assert (vote.answer_b.model_name, vote.winner) == ("gpt-3.5-turbo", "model_b")
+
+
+def test_human_judgments_need_items_and_leave_nothing_on_failure():
+    with pytest.raises(ValueError, match="run load_mt_bench first"):
+        load_mt_bench_human_judgments()
+    assert not JudgedAnswer.objects.exists()
