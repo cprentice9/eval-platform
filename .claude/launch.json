@@ -1,0 +1,17 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "inspect-view",
+      "runtimeExecutable": "uv",
+      "runtimeArgs": ["run", "inspect", "view", "--log-dir", "logs", "--port", "7575"],
+      "port": 7575
+    },
+    {
+      "name": "django",
+      "runtimeExecutable": "uv",
+      "runtimeArgs": ["run", "python", "manage.py", "runserver", "8010"],
+      "port": 8010
+    }
+  ]
+}
