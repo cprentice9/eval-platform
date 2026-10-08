@@ -239,19 +239,113 @@ def test_judge_run_judges_each_pair_in_both_orders(tmp_path):
     assert set(run.verdicts.values_list("verdict", flat=True)) == {""}
 
 
-def test_results_page_shows_the_judge_pick_for_the_specimen(client):
+def _one_pair_judged(first, second, pairs=1, minutes_ago=0):
+    """Leave one non-tie vote and store a finished judge run with the given verdicts for its pair."""
+    from datetime import timedelta
     from django.utils import timezone
 
     load_mt_bench()
     load_mt_bench_human_judgments()
     vote = HumanJudgment.objects.exclude(winner="tie").first()
-    HumanJudgment.objects.exclude(pk=vote.pk).delete()  # leaves one pair for the page to show
-    run = JudgeRun.objects.create(model_id="anthropic/claude-haiku-5-5", inspect_version="", config={}, config_hash="", started_at=timezone.now())
+    HumanJudgment.objects.exclude(pk=vote.pk).delete()
+    when = timezone.now() - timedelta(minutes=minutes_ago)
+    run = JudgeRun.objects.create(
+        model_id="anthropic/claude-haiku-5-5", inspect_version="", config={"pairs": [[0, "", ""]] * pairs},
+        config_hash="", started_at=when, completed_at=when,
+    )
     a, b = vote.answer_a, vote.answer_b
-    # The judge picks the first-shown answer both times: position bias, so a tie.
-    for first, second in ((a, b), (b, a)):
-        JudgeVerdict.objects.create(judge_run=run, item=vote.item, shown_as_a=first, shown_as_b=second, verdict="A", output="[[A]]")
+    for (x, y), verdict in (((a, b), first), ((b, a), second)):
+        JudgeVerdict.objects.create(judge_run=run, item=vote.item, shown_as_a=x, shown_as_b=y, verdict=verdict, output="")
+    return vote, run
+
+
+@pytest.mark.parametrize("first, second, reason, agreement", [
+    ("A", "B", "consistent", "same"),
+    ("B", "A", "consistent", "other"),
+    ("A", "A", "flipped", "tie"),
+    ("B", "B", "flipped", "tie"),
+    ("tie", "A", "one_tie", "tie"),
+    ("B", "tie", "one_tie", "tie"),
+    ("tie", "tie", "both_tie", "tie"),
+    ("", "B", "missing", None),
+])
+def test_judge_call_explains_each_case(first, second, reason, agreement):
+    from evals.views import _judge_call
+
+    vote, run = _one_pair_judged(first, second)
+    call = _judge_call(vote, run)
+    human = "A" if vote.winner == "model_a" else "B"
+    assert call["reason"] == reason
+    expected = {"same": "agree" if human == "A" else "disagree", "other": "agree" if human == "B" else "disagree"}.get(agreement, agreement)
+    assert call["agreement"] == expected
+
+
+def test_results_page_shows_the_judge_pick_and_no_badge_without_a_verdict(client):
+    vote, run = _one_pair_judged("A", "A")
     page = client.get("/").content.decode()
     assert "LLM judge (Claude Haiku 5.5)" in page
     assert "changed its pick when the answers swapped places" in page
-    assert "The judge disagrees with the person." in page
+    assert "The judge called a tie. The person picked an answer." in page
+    JudgeVerdict.objects.filter(judge_run=run, shown_as_a=vote.answer_a).update(verdict="")
+    page = client.get("/").content.decode()
+    assert "left out of the comparison" in page
+    assert 'class="agreement' not in page
+
+
+def test_page_ignores_a_newer_partial_judge_run(client):
+    from evals.views import _full_judge_run
+
+    vote, full = _one_pair_judged("A", "B", minutes_ago=10)
+    smoke = JudgeRun.objects.create(
+        model_id="mockllm/model", inspect_version="", config={"pairs": []}, config_hash="",
+        started_at=full.started_at.replace(year=full.started_at.year + 1), completed_at=full.completed_at,
+    )
+    assert _full_judge_run() == full
+    assert smoke.started_at > full.started_at
+
+
+def test_judge_config_names_pairs_by_item_and_model_and_limit_zero_judges_nothing(tmp_path):
+    load_mt_bench()
+    load_mt_bench_human_judgments()
+    x, y = human_judged_pairs()[0]
+    assert x.model_name < y.model_name
+    run = run_judge("mockllm/model", limit=1, log_dir=str(tmp_path))
+    assert run.config["pairs"] == [[x.item.item_id, x.model_name, y.model_name]]
+    with pytest.raises(ValueError, match="no human-judged pairs"):
+        run_judge("mockllm/model", limit=0, log_dir=str(tmp_path))
+
+
+def test_judge_keeps_going_when_a_sample_fails(monkeypatch):
+    load_mt_bench()
+    load_mt_bench_human_judgments()
+    seen = {}
+
+    def fake_eval(task, **kwargs):
+        seen.update(kwargs)
+        raise RuntimeError("stop before any API call")
+
+    monkeypatch.setattr("evals.judge.inspect_eval", fake_eval)
+    with pytest.raises(RuntimeError, match="stop before"):
+        run_judge("mockllm/model", limit=1)
+    assert seen["fail_on_error"] is False
+
+
+def test_judge_run_is_not_saved_without_its_verdicts(monkeypatch, tmp_path):
+    load_mt_bench()
+    load_mt_bench_human_judgments()
+
+    def broken(*args, **kwargs):
+        raise RuntimeError("database write failed")
+
+    monkeypatch.setattr(JudgeVerdict.objects, "bulk_create", broken)
+    with pytest.raises(RuntimeError, match="database write failed"):
+        run_judge("mockllm/model", limit=1, log_dir=str(tmp_path))
+    assert not JudgeRun.objects.exists()
+
+
+def test_vote_bars_skip_empty_segments():
+    from django.template.loader import render_to_string
+
+    row = {"name": "GPT-4", "votes": 2, "win": 2, "tie": 0, "loss": 0, "win_pct": 100.0, "tie_pct": 0.0, "loss_pct": 0.0}
+    html = render_to_string("evals/index.html", {"standings": [row], "runs": []})
+    assert "seg win" in html and "seg tie" not in html and "seg loss" not in html

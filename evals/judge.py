@@ -4,6 +4,8 @@ import re
 from datetime import datetime, timezone
 from importlib.metadata import version
 
+from django.db import transaction
+
 from inspect_ai import Task, eval as inspect_eval
 from inspect_ai.dataset import MemoryDataset, Sample
 from inspect_ai.model import ChatMessageSystem, ChatMessageUser, GenerateConfig
@@ -85,10 +87,15 @@ def pair_winner(first, second):
 
 
 def human_judged_pairs():
-    """Every distinct pair of answers that at least one person voted on, as (x, y) with x.pk < y.pk."""
-    ids = {tuple(sorted(pair)) for pair in HumanJudgment.objects.values_list("answer_a_id", "answer_b_id")}
+    """Every distinct pair of answers that at least one person voted on, as (x, y).
+
+    Pairs are ordered by item id, then model name, and x is the model whose name sorts
+    first, so the order and the config hash do not depend on database row ids.
+    """
+    ids = {frozenset(pair) for pair in HumanJudgment.objects.values_list("answer_a_id", "answer_b_id")}
     answers = JudgedAnswer.objects.select_related("item").in_bulk({i for pair in ids for i in pair})
-    return [(answers[x], answers[y]) for x, y in sorted(ids)]
+    pairs = [tuple(sorted((answers[i] for i in pair), key=lambda a: a.model_name)) for pair in ids]
+    return sorted(pairs, key=lambda p: (p[0].item.item_id, p[0].model_name, p[1].model_name))
 
 
 def _messages(item, shown_as_a, shown_as_b):
@@ -104,7 +111,7 @@ def _messages(item, shown_as_a, shown_as_b):
 
 def run_judge(model_id, temperature=None, limit=None, log_dir="logs"):
     """Judge every human-judged pair in both orders, store one JudgeRun and its verdicts, return the run."""
-    pairs = human_judged_pairs()[:limit] if limit else human_judged_pairs()
+    pairs = human_judged_pairs() if limit is None else human_judged_pairs()[:limit]
     if not pairs:
         raise ValueError("no human-judged pairs loaded; run make load first")
 
@@ -115,7 +122,7 @@ def run_judge(model_id, temperature=None, limit=None, log_dir="logs"):
         "prompts_hash": sha256("\n".join(PROMPTS)),
         "cache_prompt": False,
         "inspect_version": version("inspect-ai"),
-        "pairs": [[x.pk, y.pk] for x, y in pairs],
+        "pairs": [[x.item.item_id, x.model_name, y.model_name] for x, y in pairs],
     }
     orders = [(x, y) for x, y in pairs] + [(y, x) for x, y in pairs]
     dataset = MemoryDataset(
@@ -124,10 +131,16 @@ def run_judge(model_id, temperature=None, limit=None, log_dir="logs"):
     # Every prompt is unique, so prompt caching would only add the 1.25x cache-write charge.
     task = Task(dataset=dataset, solver=generate(), config=GenerateConfig(temperature=temperature, cache_prompt=False))
 
-    log = inspect_eval(task, model=model_id, log_dir=log_dir, display="plain")[0]
+    # A sample that still fails after Inspect's retries is stored with its error and no
+    # verdict, instead of failing the whole run and losing every other paid call.
+    log = inspect_eval(task, model=model_id, log_dir=log_dir, display="plain", fail_on_error=False)[0]
     if log.status != "success":
         raise RuntimeError(f"inspect run {log.status}: {log.error}")
+    with transaction.atomic():
+        return _store(log, model_id, temperature, config, orders)
 
+
+def _store(log, model_id, temperature, config, orders):
     run = JudgeRun.objects.create(
         model_id=model_id,
         temperature=temperature,

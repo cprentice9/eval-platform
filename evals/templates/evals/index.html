@@ -49,9 +49,9 @@
       <div class="verdict">
         <p class="verdict-who">LLM judge ({{ call.model }})</p>
         <p class="verdict-call">{% if call.winner == "tie" %}Tie{% elif call.winner %}Answer {{ call.winner }} is better{% else %}No verdict{% endif %}</p>
-        <p class="verdict-note">{% if call.flipped %}It changed its pick when the answers swapped places, which counts as a tie.{% elif call.winner == "tie" %}It called a tie.{% elif call.winner %}Same pick with the answers in either order.{% else %}Its reply had no verdict in one of the two orders.{% endif %}</p>
+        <p class="verdict-note">{% if call.reason == "consistent" %}Same pick with the answers in either order.{% elif call.reason == "flipped" %}It changed its pick when the answers swapped places, which counts as a tie.{% elif call.reason == "one_tie" %}It called a tie in one order and picked an answer in the other, which counts as a tie.{% elif call.reason == "both_tie" %}It called a tie in both orders.{% else %}Its reply had no verdict in one of the two orders, so this pair is left out of the comparison.{% endif %}</p>
       </div>
-      <p class="agreement {% if call.agrees %}agree{% else %}disagree{% endif %}">{% if call.agrees %}The judge agrees with the person.{% else %}The judge disagrees with the person.{% endif %}</p>
+      {% if call.agreement %}<p class="agreement {% if call.agreement == 'agree' %}agree{% else %}disagree{% endif %}">{% if call.agreement == "agree" %}The judge agrees with the person.{% elif call.agreement == "tie" %}The judge called a tie. The person picked an answer.{% else %}The judge disagrees with the person.{% endif %}</p>{% endif %}
       {% else %}
       <div class="verdict pending">
         <p class="verdict-who">LLM judge</p>
@@ -105,9 +105,9 @@
       <li class="bar-row">
         <span class="bar-name">{{ row.name }}</span>
         <span class="bar" role="img" aria-label="{{ row.name }}: {{ row.win }} wins, {{ row.tie }} ties, {{ row.loss }} losses out of {{ row.votes }} votes">
-          <span class="seg win{% if row.win_pct < 14 %} small{% endif %}" style="width: {{ row.win_pct|floatformat:2 }}%" title="{{ row.win }} wins of {{ row.votes }}">{% if row.win_pct >= 9 %}{{ row.win_pct|floatformat:0 }}%{% endif %}</span>
-          <span class="seg tie{% if row.tie_pct < 14 %} small{% endif %}" style="width: {{ row.tie_pct|floatformat:2 }}%" title="{{ row.tie }} ties of {{ row.votes }}">{% if row.tie_pct >= 9 %}{{ row.tie_pct|floatformat:0 }}%{% endif %}</span>
-          <span class="seg loss{% if row.loss_pct < 14 %} small{% endif %}" style="width: {{ row.loss_pct|floatformat:2 }}%" title="{{ row.loss }} losses of {{ row.votes }}">{% if row.loss_pct >= 9 %}{{ row.loss_pct|floatformat:0 }}%{% endif %}</span>
+          {% if row.win %}<span class="seg win{% if row.win_pct < 14 %} small{% endif %}" style="width: {{ row.win_pct|floatformat:2 }}%" title="{{ row.win }} wins of {{ row.votes }}">{% if row.win_pct >= 9 %}{{ row.win_pct|floatformat:0 }}%{% endif %}</span>{% endif %}
+          {% if row.tie %}<span class="seg tie{% if row.tie_pct < 14 %} small{% endif %}" style="width: {{ row.tie_pct|floatformat:2 }}%" title="{{ row.tie }} ties of {{ row.votes }}">{% if row.tie_pct >= 9 %}{{ row.tie_pct|floatformat:0 }}%{% endif %}</span>{% endif %}
+          {% if row.loss %}<span class="seg loss{% if row.loss_pct < 14 %} small{% endif %}" style="width: {{ row.loss_pct|floatformat:2 }}%" title="{{ row.loss }} losses of {{ row.votes }}">{% if row.loss_pct >= 9 %}{{ row.loss_pct|floatformat:0 }}%{% endif %}</span>{% endif %}
         </span>
         <span class="bar-total">{{ row.votes }} votes</span>
       </li>
@@ -115,6 +115,7 @@
     </ul>
     <details class="table-view">
       <summary>Show as a table</summary>
+      <div class="table-scroll">
       <table>
         <thead><tr><th scope="col">Model</th><th scope="col">Wins</th><th scope="col">Ties</th><th scope="col">Losses</th><th scope="col">Votes</th></tr></thead>
         <tbody>
@@ -123,6 +124,7 @@
           {% endfor %}
         </tbody>
       </table>
+      </div>
     </details>
     {% else %}
     <p class="section-lede">No votes loaded yet. Run <code>make load</code>.</p>

@@ -36,26 +36,50 @@ def _standings():
     return sorted(rows, key=lambda r: r["win_pct"], reverse=True)
 
 
-def _judge_call(specimen):
-    """The newest judge run's pick for the specimen pair, as "A", "B", or "tie", or None."""
-    a, b = specimen.answer_a_id, specimen.answer_b_id
-    run = JudgeRun.objects.filter(verdicts__shown_as_a=a, verdicts__shown_as_b=b).first()
+def _full_judge_run():
+    """The newest finished judge run that covered every human-judged pair, or None.
+
+    Smoke runs made with --limit cover only some pairs, so the page skips them.
+    """
+    pair_count = len({frozenset(p) for p in HumanJudgment.objects.values_list("answer_a_id", "answer_b_id")})
+    for run in JudgeRun.objects.filter(completed_at__isnull=False).order_by("-started_at", "-pk"):
+        if len(run.config.get("pairs", [])) == pair_count:
+            return run
+    return None
+
+
+def _judge_call(specimen, run):
+    """The run's pick for the specimen pair, why, and how it compares with the person's vote."""
     if not run:
         return None
-    calls = dict(((v.shown_as_a_id, v.shown_as_b_id), v.verdict) for v in run.verdicts.filter(item=specimen.item))
+    a, b = specimen.answer_a_id, specimen.answer_b_id
+    rows = run.verdicts.filter(shown_as_a__in=(a, b), shown_as_b__in=(a, b))
+    calls = {(x, y): verdict for x, y, verdict in rows.values_list("shown_as_a", "shown_as_b", "verdict")}
     first, second = calls.get((a, b), ""), calls.get((b, a), "")
-    winner = {"x": "A", "y": "B"}.get(pair_winner(first, second), pair_winner(first, second))
+    combined = pair_winner(first, second)
+    winner = {"x": "A", "y": "B"}.get(combined, combined)
+    if winner is None:
+        reason = "missing"
+    elif winner != "tie":
+        reason = "consistent"
+    elif first == second == "tie":
+        reason = "both_tie"
+    elif first == second:
+        reason = "flipped"  # the same letter both times: it picked by position, not by answer
+    else:
+        reason = "one_tie"
     human = "A" if specimen.winner == "model_a" else "B"
-    return {
-        "model": MODEL_NAMES.get(run.model_id, run.model_id),
-        "winner": winner,
-        # The same letter in both orders means it picked whichever answer came first, or second.
-        "flipped": first == second and first in ("A", "B"),
-        "agrees": winner == human,
-    }
+    if winner is None:
+        agreement = None
+    elif winner == human:
+        agreement = "agree"
+    else:
+        agreement = "tie" if winner == "tie" else "disagree"
+    return {"model": MODEL_NAMES.get(run.model_id, run.model_id), "winner": winner, "reason": reason, "agreement": agreement}
 
 
 def index(request):
+    judge_run = _full_judge_run()
     specimen = (
         HumanJudgment.objects.select_related("item", "answer_a", "answer_b")
         .exclude(winner="tie")
@@ -65,12 +89,12 @@ def index(request):
     if specimen:
         specimen.name_a = MODEL_NAMES.get(specimen.answer_a.model_name, specimen.answer_a.model_name)
         specimen.name_b = MODEL_NAMES.get(specimen.answer_b.model_name, specimen.answer_b.model_name)
-        specimen.judge_call = _judge_call(specimen)
+        specimen.judge_call = _judge_call(specimen, judge_run)
     return render(request, "evals/index.html", {
         "specimen": specimen,
         "vote_count": HumanJudgment.objects.count(),
         "judge_count": HumanJudgment.objects.values("judge").distinct().count(),
         "standings": _standings(),
-        "judged": JudgeRun.objects.exists(),
+        "judged": judge_run is not None,
         "runs": Run.objects.annotate(questions=Count("samples")).order_by("-started_at"),
     })

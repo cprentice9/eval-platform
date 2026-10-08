@@ -46,7 +46,7 @@ a:focus-visible, .answer-text:focus-visible, summary:focus-visible {
   outline: 3px solid var(--focus);
   outline-offset: 3px;
 }
-code { font-size: 0.9em; background: var(--panel); border: 1px solid var(--rule); border-radius: 4px; padding: 0.05em 0.35em; white-space: nowrap; }
+code { font-size: 0.9em; background: var(--panel); border: 1px solid var(--rule); border-radius: 4px; padding: 0.05em 0.35em; white-space: nowrap; display: inline-block; max-width: 100%; overflow-x: auto; vertical-align: bottom; }
 .muted { color: var(--muted); }
 
 .masthead, main, .colophon { max-width: 72rem; margin: 0 auto; padding-inline: 1rem; }
